@@ -23,3 +23,18 @@ Build a regime-aware crypto trading bot optimized for capital preservation and s
 
 ## Execution Frequency
 - Medium-term (4H / 1D candles)
+
+
+## Risk Management
+
+- Risk per trade: max 1% of total equity
+- Stop-loss: ATR-based dynamic stop
+- Maximum drawdown allowed: 20%
+- Maximum open positions: 1
+- Kill-switch activated if daily loss exceeds 3%
+
+## Performance Targets
+
+- Sharpe Ratio >= 1.2
+- Positive expectancy
+- Lower drawdown than BTC buy-and-hold

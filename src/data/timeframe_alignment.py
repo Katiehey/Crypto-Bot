@@ -41,7 +41,7 @@ if __name__ == "__main__":
     print(aligned.columns)
 
     # --- ADDED CODE TO SAVE THE FILE ---
-    output_path = "data/btc_usdt_aligned_4h_1D.csv"
+    output_path = "data/btc_usdt_aligned_4h_1d.csv"
     os.makedirs(os.path.dirname(output_path), exist_ok=True) # Ensure the directory exists
     aligned.to_csv(output_path)
     print(f"\nSuccessfully saved the aligned data to {output_path}")

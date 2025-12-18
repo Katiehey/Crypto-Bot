@@ -52,7 +52,7 @@ class MeanReversionStrategy:
             (df["regime"] == MarketRegime.RANGE.value)
             & (df["rsi"] < self.rsi_entry)
             & (df["close"] < df["bb_lower"])
-            & (df["sentiment_norm"] > 0.25)  # block in Extreme Fear
+            & (df["sentiment_norm"] > 0.35)   # only allow Fear (0.35–0.5), Greed, Extreme Greed
         )
 
         df.loc[long_condition, "signal"] = MeanReversionSignal.LONG.value
@@ -64,7 +64,7 @@ class MeanReversionStrategy:
         exit_condition = (
             (df["rsi"] > self.rsi_exit)
             | (df["close"] > df["bb_mid"])
-            | (df["sentiment_norm"] <= 0.25)  # force exit in Extreme Fear
+            | (df["sentiment_norm"] <= 0.35)  # force exit in Neutral or Extreme Fear
         )
         df.loc[exit_condition, "signal"] = MeanReversionSignal.FLAT.value
         df.loc[exit_condition, "stop_price"] = np.nan
@@ -80,12 +80,13 @@ class MeanReversionStrategy:
         df.loc[df["signal"] == MeanReversionSignal.FLAT.value, "stop_price"] = np.nan
 
         # --- Sentiment override (final safeguard) ---
-        df.loc[df["sentiment_norm"] <= 0.25, "signal"] = MeanReversionSignal.FLAT.value
-        df.loc[df["sentiment_norm"] <= 0.25, "stop_price"] = np.nan
+        df.loc[df["sentiment_norm"] <= 0.35, "signal"] = MeanReversionSignal.FLAT.value
+        df.loc[df["sentiment_norm"] <= 0.35, "stop_price"] = np.nan
 
         return df[
             ["signal", "stop_price", "rsi", "bb_upper", "bb_lower", "atr", "sentiment_norm"]
         ]
+
 
 
 if __name__ == "__main__":
@@ -106,8 +107,8 @@ if __name__ == "__main__":
     print("\nSignals by sentiment bucket:")
     sentiment_bins = pd.cut(
         signals["sentiment_norm"],
-        bins=[0, 0.25, 0.5, 0.75, 1.0],
-        labels=["Extreme Fear", "Fear/Neutral", "Greed", "Extreme Greed"]
+        bins=[0, 0.25, 0.35, 0.5, 0.75, 1.0],
+        labels=["Extreme Fear", "Neutral", "Fear", "Greed", "Extreme Greed"]
     )
     diagnostic = signals.groupby(sentiment_bins)["signal"].value_counts()
     print(diagnostic)

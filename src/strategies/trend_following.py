@@ -103,8 +103,11 @@ if __name__ == "__main__":
     print(signals["signal"].value_counts())
 
     # --- Diagnostic: signals by sentiment bucket ---
-    print("\nSignals by sentiment bucket:")
-    sentiment_bins = pd.cut(signals["sentiment_norm"], bins=[0, 0.25, 0.5, 0.75, 1.0],
-                            labels=["Extreme Fear", "Fear/Neutral", "Greed", "Extreme Greed"])
+    print("\nSignals by sentiment bucket (refined):")
+    sentiment_bins = pd.cut(
+        signals["sentiment_norm"],
+        bins=[0, 0.25, 0.35, 0.5, 0.75, 1.0],
+        labels=["Extreme Fear", "Neutral", "Fear", "Greed", "Extreme Greed"]
+    )
     diagnostic = signals.groupby(sentiment_bins)["signal"].value_counts()
     print(diagnostic)

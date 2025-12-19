@@ -134,6 +134,7 @@ class EventBacktester:
                 results.append({
                     "exit_type": "SIGNAL",
                     "pnl": pnl,
+                    "pnl_pct": pnl / equity,
                     "equity": equity,
                     "drawdown": drawdown,
                     "source": source,

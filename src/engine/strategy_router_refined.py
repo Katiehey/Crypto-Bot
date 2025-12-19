@@ -5,7 +5,7 @@ from datetime import datetime
 
 from src.regime.regime_detector import MarketRegime
 from src.strategies.trend_following_refined import TrendSignal
-from src.strategies.mean_reversion_refined import MeanReversionSignal
+from src.strategies.mean_reversion_refined import MeanReversionSignal, is_hammer, is_doji
 from src.strategies.bollinger import BollingerSignal
 
 
@@ -25,8 +25,8 @@ class StrategyRouter:
 
         # --- Risk allocation per strategy ---
         self.risk_per_trade = {
-            "TREND": 0.004,
-            "MEAN_REVERSION": 0.005,
+            "TREND": 0.009,
+            "MEAN_REVERSION": 0.006,
             "BOLLINGER": 0.001,
         }
 
@@ -59,26 +59,30 @@ class StrategyRouter:
 
             # TREND: only Extreme Greed
             if regime == MarketRegime.TREND.value:
-                if sentiment is None or sentiment < 0.80:
+                if sentiment is None or sentiment < 0.75:
                     continue
                 if trend_signals.loc[i, "signal"] == TrendSignal.LONG.value:
-                    chosen_source = "TREND"
-                    chosen_stop = trend_signals.loc[i, "stop_price"]
+                    # Volume breakout filter
+                    if df.loc[i, "volume"] > df["volume"].rolling(20).mean().loc[i] * 1.5:
+                        chosen_source = "TREND"
+                        chosen_stop = trend_signals.loc[i, "stop_price"]
             # RANGE: MR in Extreme Fear only
             elif regime == MarketRegime.RANGE.value:
-                candidates = []
-                if sentiment is not None and sentiment <= 0.20:
-                    if mr_signals.loc[i, "signal"] == MeanReversionSignal.LONG.value:
-                        candidates.append(("MEAN_REVERSION", mr_signals.loc[i, "stop_price"]))
+                continue
+                #candidates = []
+                #if sentiment is not None and sentiment <= 0.20:
+                    #if mr_signals.loc[i, "signal"] == MeanReversionSignal.LONG.value:
+                        #if is_hammer(df.loc[i]) or is_doji(df.loc[i]):
+                            #candidates.append(("MEAN_REVERSION", mr_signals.loc[i, "stop_price"]))
                 # Bollinger blocked for now (remove drag)
                 # If you want to test later:
                 # if sentiment is not None and 0.55 <= sentiment < 0.65:
                 #     if boll_signals.loc[i, "signal"] == BollingerSignal.LONG.value:
                 #         candidates.append(("BOLLINGER", boll_signals.loc[i, "stop_price"]))
 
-                if candidates:
-                    candidates.sort(key=lambda x: self.priority[x[0]], reverse=True)
-                    chosen_source, chosen_stop = candidates[0]
+                #if candidates:
+                #    candidates.sort(key=lambda x: self.priority[x[0]], reverse=True)
+                #    chosen_source, chosen_stop = candidates[0]
 
             # --- Apply chosen signal ---
             if chosen_source:

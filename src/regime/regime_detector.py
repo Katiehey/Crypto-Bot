@@ -62,7 +62,7 @@ class RegimeDetector:
             elif sent >= 0.25:  # Neutral / Fear
                 strategies += [Strategy.RANGE.value, Strategy.BOLLINGER.value]
             else:  # Extreme Fear
-                strategies = []  # UNCERTAIN only
+                strategies = [Strategy.RANGE.value]  # allow MR in Extreme Fear
             return strategies
 
         df["enabled_strategies"] = df["sentiment_norm"].apply(map_strategies)

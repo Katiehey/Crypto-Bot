@@ -2,6 +2,7 @@ import pandas as pd
 from enum import Enum
 from datetime import datetime
 
+
 from src.regime.regime_detector import MarketRegime
 from src.strategies.trend_following_refined import TrendSignal
 from src.strategies.mean_reversion_refined import MeanReversionSignal
@@ -56,28 +57,26 @@ class StrategyRouter:
             chosen_source = None
             chosen_stop = None
 
-            # --- TREND REGIME ---
+            # TREND: only Extreme Greed
             if regime == MarketRegime.TREND.value:
-                if sentiment is not None and sentiment <= 0.5:
-                    continue  # Block TREND in Neutral, Fear, Extreme Fear
+                if sentiment is None or sentiment < 0.80:
+                    continue
                 if trend_signals.loc[i, "signal"] == TrendSignal.LONG.value:
                     chosen_source = "TREND"
                     chosen_stop = trend_signals.loc[i, "stop_price"]
-
-            # --- RANGE REGIME ---
+            # RANGE: MR in Extreme Fear only
             elif regime == MarketRegime.RANGE.value:
-                if sentiment is not None and sentiment <= self.neutral_block:
-                    continue  # Block RANGE in Neutral and Extreme Fear
-
-                # Collect possible signals
                 candidates = []
-                if mr_signals.loc[i, "signal"] == MeanReversionSignal.LONG.value:
-                    candidates.append(("MEAN_REVERSION", mr_signals.loc[i, "stop_price"]))
-                if boll_signals.loc[i, "signal"] == BollingerSignal.LONG.value:
-                    candidates.append(("BOLLINGER", boll_signals.loc[i, "stop_price"]))
+                if sentiment is not None and sentiment <= 0.20:
+                    if mr_signals.loc[i, "signal"] == MeanReversionSignal.LONG.value:
+                        candidates.append(("MEAN_REVERSION", mr_signals.loc[i, "stop_price"]))
+                # Bollinger blocked for now (remove drag)
+                # If you want to test later:
+                # if sentiment is not None and 0.55 <= sentiment < 0.65:
+                #     if boll_signals.loc[i, "signal"] == BollingerSignal.LONG.value:
+                #         candidates.append(("BOLLINGER", boll_signals.loc[i, "stop_price"]))
 
                 if candidates:
-                    # Resolve conflicts by priority
                     candidates.sort(key=lambda x: self.priority[x[0]], reverse=True)
                     chosen_source, chosen_stop = candidates[0]
 
@@ -130,8 +129,22 @@ if __name__ == "__main__":
     # --- Trigger backtester ---
     from src.backtest.event_backtester_refined import EventBacktester
 
+    # Helper for sentiment buckets
+    def sentiment_bucket(val):
+        if val <= 0.20:
+            return "EXTREME_FEAR"
+        elif val <= 0.35:
+            return "FEAR/NEUTRAL"
+        elif val <= 0.65:
+            return "GREED"
+        else:
+            return "EXTREME_GREED"
+
     bt = EventBacktester(initial_capital=500)
+
+    # Modify run() to attach sentiment bucket
     results = bt.run(df, routed)
+    #results["sentiment_bucket"] = df.loc[results.index, "sentiment_norm"].apply(sentiment_bucket)
 
     print("\nBacktest results (last 5 trades):")
     print(results.tail())
@@ -140,3 +153,25 @@ if __name__ == "__main__":
     summary = bt.summary(results)
     print("\nPerformance Summary by Strategy:")
     print(summary)
+
+    # --- Sentiment diagnostics ---
+    print("\nSentiment diagnostics:")
+
+    print("\nTrades per sentiment bucket:")
+    print(results.groupby("sentiment_bucket")["exit_type"].count())
+
+    print("\nAverage PnL per sentiment bucket:")
+    print(results.groupby("sentiment_bucket")["pnl"].mean())
+
+    print("\nTotal PnL per sentiment bucket:")
+    print(results.groupby("sentiment_bucket")["pnl"].sum())
+
+    print("\nWin rate per sentiment bucket:")
+    print(results.groupby("sentiment_bucket")["pnl"].apply(lambda x: (x > 0).mean()))
+
+    print(df["sentiment_norm"].describe())
+    print((df["sentiment_norm"] <= 0.20).sum())
+
+    extreme_fear_idx = df[df["sentiment_norm"] <= 0.20].index
+    print(mr_signals.loc[extreme_fear_idx]["signal"].value_counts())
+

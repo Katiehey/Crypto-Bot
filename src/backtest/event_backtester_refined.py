@@ -1,6 +1,7 @@
 import pandas as pd
 import glob
 import os
+pd.set_option('future.no_silent_downcasting', True)
 
 from src.risk.risk_manager import RiskManager, RiskConfig
 
@@ -28,16 +29,15 @@ class EventBacktester:
     def run(self, df: pd.DataFrame, intent: pd.DataFrame) -> pd.DataFrame:
         equity = self.initial_capital
         peak_equity = equity
+
         position = None
         entry_price = None
         stop_price = None
-        position_size = 0
+        position_size = 0.0
         source = None
         partial_exits_taken = set()
-
         results = []
 
-        # helper for sentiment bucket
         def sentiment_bucket(val):
             if val <= 0.20:
                 return "EXTREME_FEAR"
@@ -47,17 +47,17 @@ class EventBacktester:
                 return "GREED"
             else:
                 return "EXTREME_GREED"
-
+            
         for i in range(1, len(df)):
             row = df.iloc[i]
             prev_intent = intent.iloc[i - 1]
             sent_bucket = sentiment_bucket(row["sentiment_norm"])
 
-            # --- ENTRY ---
+            # --- ENTRY (LONG) ---
             if position is None and prev_intent["intent"] == "LONG":
                 risk_pt = (
                     prev_intent["risk_per_trade"]
-                    if "risk_per_trade" in prev_intent and not pd.isna(prev_intent["risk_per_trade"])
+                    if ("risk_per_trade" in prev_intent and not pd.isna(prev_intent["risk_per_trade"]))
                     else self.risk_per_trade
                 )
 
@@ -67,106 +67,146 @@ class EventBacktester:
 
                 if stop_price is None or stop_price >= entry_price:
                     continue
-                
-                # Use RiskManager instead of manual math
+
                 risk_cfg = RiskConfig(
                     risk_per_trade=risk_pt,
                     max_position_pct=0.25,
-                    min_trade_value=10.0
-            )
+                    min_trade_value=15.0,
+                )
+
                 risk_mgr = RiskManager(risk_cfg)
                 pos_info = risk_mgr.calculate_position_size(
-                equity=equity,
-                entry_price=entry_price,
-                stop_price=stop_price
-            )
+                    equity=equity,
+                    entry_price=entry_price,
+                    stop_price=stop_price,
+                )
 
-            if pos_info["size"] <= 0:
-                continue
+                if pos_info["size"] <= 0:
+                    continue
 
-            position_size = pos_info["size"]
-            position = "LONG"
-            partial_exits_taken = set()
+                position_size = float(pos_info["size"])
+                position = "LONG"
+                partial_exits_taken = set()
 
-            # --- Multi-stage partial exits ---
+            # --- PARTIAL EXITS ---
             if position == "LONG" and position_size > 0:
                 for ratio, multiple in self.partial_exit_levels:
-                    if multiple not in partial_exits_taken:
-                        r_target = entry_price + (entry_price - stop_price) * multiple
-                        if row["high"] >= r_target:
-                            exit_price = r_target * (1 - self.slippage)
-                            partial_size = position_size * ratio
-                            pnl = partial_size * (exit_price - entry_price)
-                            fee_cost = abs(partial_size * exit_price) * self.fee
-                            equity += pnl - fee_cost
-                            peak_equity = max(peak_equity, equity)
-                            drawdown = (peak_equity - equity) / peak_equity
+                    if multiple in partial_exits_taken:
+                        continue
+                    r_target = entry_price + (entry_price - stop_price) * multiple
+                    if row["high"] >= r_target:
+                        exit_price = r_target * (1 - self.slippage)
+                        partial_size = position_size * ratio
+                        pnl = partial_size * (exit_price - entry_price)
+                        pnl_pct = pnl / equity if equity != 0 else 0.0
+                        fee_cost = abs(partial_size * exit_price) * self.fee
+                        equity += pnl - fee_cost
+                        peak_equity = max(peak_equity, equity)
+                        drawdown = (peak_equity - equity) / peak_equity if peak_equity > 0 else 0.0
+                        results.append({
+                            "timestamp": df.index[i],
+                            "exit_type": f"PARTIAL_{multiple}R",
+                            "pnl": pnl,
+                            "equity": equity,
+                            "drawdown": drawdown,
+                            "source": source,
+                            "sentiment_bucket": sent_bucket,
+                        })
+                        position_size -= partial_size
+                        partial_exits_taken.add(multiple)
 
-                            results.append({
-                                "exit_type": f"PARTIAL_{multiple}R",
-                                "pnl": pnl,
-                                "equity": equity,
-                                "drawdown": drawdown,
-                                "source": source,
-                                "sentiment_bucket": sent_bucket
-                            })
+                # --- Progressive trailing stops ---
+                if position == "LONG":
+                    # After 1R partial: trail to breakeven
+                    if 1.0 in partial_exits_taken:
+                        breakeven_stop = entry_price * (1 - self.slippage - self.fee)
+                        stop_price = max(stop_price, breakeven_stop)
 
-                            position_size -= partial_size
-                            partial_exits_taken.add(multiple)
+                     # After 2R partial: trail to +1R profit OR ATR-based dynamic stop
+                    if 2.0 in partial_exits_taken:
+                        # Fixed +1R profit stop
+                        oneR_profit_stop = entry_price + (entry_price - stop_price)
+
+                        # Regime-specific ATR trailing
+                        regime = row["regime"] if "regime" in df.columns else None
+                        if regime == "TREND" and "atr_4h" in df.columns and not pd.isna(row["atr_4h"]):
+                            atr_stop = row["close"] - 2.5 * row["atr_4h"]   # looser trailing in trends
+                            stop_price = max(stop_price, oneR_profit_stop, atr_stop)
+                            print(df.index[i], "Stop updated via ATR TREND:", stop_price)
+                        elif regime == "RANGE" and "atr_D" in df.columns and not pd.isna(row["atr_D"]):
+                            atr_stop = row["close"] - 1.0 * row["atr_D"]    # tighter trailing in ranges
+                            stop_price = max(stop_price, oneR_profit_stop, atr_stop)
+                            print(df.index[i], "Stop updated via ATR RANGE:", stop_price)
+                        else:
+                            stop_price = max(stop_price, oneR_profit_stop)
+                        print(df.index[i], "Stop updated via ATR:", stop_price)
 
             # --- STOP LOSS ---
-            if position == "LONG" and row["low"] <= stop_price:
+            if position == "LONG" and position_size > 0 and row["low"] <= stop_price:
                 exit_price = stop_price * (1 - self.slippage)
                 pnl = position_size * (exit_price - entry_price)
+                pnl_pct = pnl / equity if equity != 0 else 0.0
                 fee_cost = abs(position_size * exit_price) * self.fee
                 equity += pnl - fee_cost
                 peak_equity = max(peak_equity, equity)
-                drawdown = (peak_equity - equity) / peak_equity
-
+                drawdown = (peak_equity - equity) / peak_equity if peak_equity > 0 else 0.0
                 results.append({
+                    "timestamp": df.index[i],
                     "exit_type": "STOP",
                     "pnl": pnl,
+                    "pnl_pct": pnl_pct,
                     "equity": equity,
                     "drawdown": drawdown,
                     "source": source,
-                    "sentiment_bucket": sent_bucket
+                    "sentiment_bucket": sent_bucket,
                 })
-
                 position = None
                 entry_price = None
                 stop_price = None
-                position_size = 0
+                position_size = 0.0
                 source = None
                 partial_exits_taken = set()
                 continue
 
             # --- EXIT ON FLAT ---
-            if position == "LONG" and prev_intent["intent"] == "FLAT":
+            if position == "LONG" and position_size > 0 and prev_intent["intent"] == "FLAT":
                 exit_price = row["open"] * (1 - self.slippage)
                 pnl = position_size * (exit_price - entry_price)
                 fee_cost = abs(position_size * exit_price) * self.fee
                 equity += pnl - fee_cost
                 peak_equity = max(peak_equity, equity)
-                drawdown = (peak_equity - equity) / peak_equity
-
+                drawdown = (peak_equity - equity) / peak_equity if peak_equity > 0 else 0.0
+                pnl_pct = pnl / equity if equity != 0 else 0.0
                 results.append({
+                    "timestamp": df.index[i],
                     "exit_type": "SIGNAL",
                     "pnl": pnl,
-                    "pnl_pct": pnl / equity,
+                    "pnl_pct": pnl_pct,
                     "equity": equity,
                     "drawdown": drawdown,
                     "source": source,
-                    "sentiment_bucket": sent_bucket
+                    "sentiment_bucket": sent_bucket,
                 })
-
                 position = None
                 entry_price = None
                 stop_price = None
-                position_size = 0
+                position_size = 0.0
                 source = None
                 partial_exits_taken = set()
 
+            # --- MARK-TO-MARKET (always record equity each bar) ---
+            results.append({
+                "timestamp": df.index[i],
+                "exit_type": "MARK",
+                "pnl": 0.0,
+                "pnl_pct": 0.0,
+                "equity": equity,
+                "drawdown": (peak_equity - equity) / peak_equity if peak_equity > 0 else 0.0,
+                "source": source,
+                "sentiment_bucket": sent_bucket,
+            })
         return pd.DataFrame(results)
+
 
     def summary(self, trades: pd.DataFrame) -> pd.DataFrame:
         if trades.empty:

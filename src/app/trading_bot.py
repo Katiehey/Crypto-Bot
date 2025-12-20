@@ -81,7 +81,7 @@ class TradingBot:
             risk_cfg = RiskConfig(
                 risk_per_trade=latest_intent["risk_per_trade"],
                 max_position_pct=0.25,
-                min_trade_value=10.0
+                min_trade_value=15.0
             )
             risk_mgr = RiskManager(risk_cfg)
             pos_info = risk_mgr.calculate_position_size(

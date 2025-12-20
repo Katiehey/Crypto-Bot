@@ -2,7 +2,6 @@ import pandas as pd
 from enum import Enum
 from datetime import datetime
 
-
 from src.regime.regime_detector import MarketRegime
 from src.strategies.trend_following_refined import TrendSignal
 from src.strategies.mean_reversion_refined import MeanReversionSignal, is_hammer, is_doji
@@ -50,39 +49,36 @@ class StrategyRouter:
         result["source"] = None
         result["risk_per_trade"] = 0.0
 
-        for i in df.index:
+        for pos in range(len(df)):
+            i = df.index[pos]
             regime = df.loc[i, "regime"]
             sentiment = df.loc[i, "sentiment_norm"]
 
             chosen_source = None
             chosen_stop = None
 
-            # TREND: only Extreme Greed
+            # TREND regime: allow Greed and Extreme Greed
             if regime == MarketRegime.TREND.value:
-                if sentiment is None or sentiment < 0.75:
-                    continue
-                if trend_signals.loc[i, "signal"] == TrendSignal.LONG.value:
-                    # Volume breakout filter
-                    if df.loc[i, "volume"] > df["volume"].rolling(20).mean().loc[i] * 1.5:
-                        chosen_source = "TREND"
-                        chosen_stop = trend_signals.loc[i, "stop_price"]
-            # RANGE: MR in Extreme Fear only
-            elif regime == MarketRegime.RANGE.value:
-                continue
-                #candidates = []
-                #if sentiment is not None and sentiment <= 0.20:
-                    #if mr_signals.loc[i, "signal"] == MeanReversionSignal.LONG.value:
-                        #if is_hammer(df.loc[i]) or is_doji(df.loc[i]):
-                            #candidates.append(("MEAN_REVERSION", mr_signals.loc[i, "stop_price"]))
-                # Bollinger blocked for now (remove drag)
-                # If you want to test later:
-                # if sentiment is not None and 0.55 <= sentiment < 0.65:
-                #     if boll_signals.loc[i, "signal"] == BollingerSignal.LONG.value:
-                #         candidates.append(("BOLLINGER", boll_signals.loc[i, "stop_price"]))
+                if sentiment is not None and sentiment >= 0.70:
+                    if trend_signals.loc[i, "signal"] == TrendSignal.LONG.value:
+                        if df.loc[i, "volume"] > df["volume"].rolling(20).mean().loc[i] * 1.2:
+                            chosen_source = "TREND"
+                            chosen_stop = trend_signals.loc[i, "stop_price"]
 
-                #if candidates:
-                #    candidates.sort(key=lambda x: self.priority[x[0]], reverse=True)
-                #    chosen_source, chosen_stop = candidates[0]
+            # RANGE regime: allow MR in Extreme Fear, Bollinger in Neutral/Fear
+            elif regime == MarketRegime.RANGE.value:
+                candidates = []
+                if sentiment is not None and sentiment <= 0.20:
+                    if mr_signals.loc[i, "signal"] == MeanReversionSignal.LONG.value:
+                        if is_hammer(df.loc[i]) or is_doji(df.loc[i]):
+                            candidates.append(("MEAN_REVERSION", mr_signals.loc[i, "stop_price"]))
+                if sentiment is not None and 0.55 <= sentiment < 0.65:
+                    if boll_signals.loc[i, "signal"] == BollingerSignal.LONG.value:
+                        candidates.append(("BOLLINGER", boll_signals.loc[i, "stop_price"]))
+
+                if candidates:
+                    candidates.sort(key=lambda x: self.priority[x[0]], reverse=True)
+                    chosen_source, chosen_stop = candidates[0]
 
             # --- Apply chosen signal ---
             if chosen_source:
@@ -90,6 +86,15 @@ class StrategyRouter:
                 result.loc[i, "stop_price"] = chosen_stop
                 result.loc[i, "source"] = chosen_source
                 result.loc[i, "risk_per_trade"] = self.risk_per_trade[chosen_source]
+
+                # Persist intent for next 2 bars by position
+                for j in range(1, 3):
+                    if pos + j < len(df):
+                        next_idx = df.index[pos + j]
+                        result.loc[next_idx, "intent"] = TradeIntent.LONG.value
+                        result.loc[next_idx, "stop_price"] = chosen_stop
+                        result.loc[next_idx, "source"] = chosen_source
+                        result.loc[next_idx, "risk_per_trade"] = self.risk_per_trade[chosen_source]
 
         return result
 
@@ -133,7 +138,6 @@ if __name__ == "__main__":
     # --- Trigger backtester ---
     from src.backtest.event_backtester_refined import EventBacktester
 
-    # Helper for sentiment buckets
     def sentiment_bucket(val):
         if val <= 0.20:
             return "EXTREME_FEAR"
@@ -145,10 +149,7 @@ if __name__ == "__main__":
             return "EXTREME_GREED"
 
     bt = EventBacktester(initial_capital=500)
-
-    # Modify run() to attach sentiment bucket
     results = bt.run(df, routed)
-    #results["sentiment_bucket"] = df.loc[results.index, "sentiment_norm"].apply(sentiment_bucket)
 
     print("\nBacktest results (last 5 trades):")
     print(results.tail())
@@ -158,24 +159,12 @@ if __name__ == "__main__":
     print("\nPerformance Summary by Strategy:")
     print(summary)
 
-    # --- Sentiment diagnostics ---
     print("\nSentiment diagnostics:")
-
     print("\nTrades per sentiment bucket:")
     print(results.groupby("sentiment_bucket")["exit_type"].count())
-
     print("\nAverage PnL per sentiment bucket:")
     print(results.groupby("sentiment_bucket")["pnl"].mean())
-
     print("\nTotal PnL per sentiment bucket:")
     print(results.groupby("sentiment_bucket")["pnl"].sum())
-
     print("\nWin rate per sentiment bucket:")
     print(results.groupby("sentiment_bucket")["pnl"].apply(lambda x: (x > 0).mean()))
-
-    print(df["sentiment_norm"].describe())
-    print((df["sentiment_norm"] <= 0.20).sum())
-
-    extreme_fear_idx = df[df["sentiment_norm"] <= 0.20].index
-    print(mr_signals.loc[extreme_fear_idx]["signal"].value_counts())
-

@@ -2,6 +2,9 @@ import pandas as pd
 import glob
 import os
 
+from src.risk.risk_manager import RiskManager, RiskConfig
+
+
 class EventBacktester:
     def __init__(
         self,
@@ -57,7 +60,6 @@ class EventBacktester:
                     if "risk_per_trade" in prev_intent and not pd.isna(prev_intent["risk_per_trade"])
                     else self.risk_per_trade
                 )
-                risk_amount = equity * risk_pt
 
                 entry_price = row["open"] * (1 + self.slippage)
                 stop_price = prev_intent["stop_price"]
@@ -65,10 +67,26 @@ class EventBacktester:
 
                 if stop_price is None or stop_price >= entry_price:
                     continue
+                
+                # Use RiskManager instead of manual math
+                risk_cfg = RiskConfig(
+                    risk_per_trade=risk_pt,
+                    max_position_pct=0.25,
+                    min_trade_value=10.0
+            )
+                risk_mgr = RiskManager(risk_cfg)
+                pos_info = risk_mgr.calculate_position_size(
+                equity=equity,
+                entry_price=entry_price,
+                stop_price=stop_price
+            )
 
-                position_size = risk_amount / (entry_price - stop_price)
-                position = "LONG"
-                partial_exits_taken = set()
+            if pos_info["size"] <= 0:
+                continue
+
+            position_size = pos_info["size"]
+            position = "LONG"
+            partial_exits_taken = set()
 
             # --- Multi-stage partial exits ---
             if position == "LONG" and position_size > 0:

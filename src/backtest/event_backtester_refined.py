@@ -5,7 +5,7 @@ import os
 class EventBacktester:
     def __init__(
         self,
-        initial_capital: float = 10_000.0,
+        initial_capital: float = 500.0,
         risk_per_trade: float = 0.003,
         slippage: float = 0.0003,
         fee: float = 0.0004,

@@ -50,7 +50,8 @@ class TrendFollowingStrategy:
         long_condition = (
             (df["sma_fast"] > df["sma_slow"])
             & (df["regime"] == MarketRegime.TREND.value)
-            & (df["sentiment_norm"] > 0.5)  # only allow in Greed/Extreme Greed
+            & (df["sentiment_norm"] >= 0.35)  # only allow in Greed/Extreme Greed
+            & (df["sentiment_norm"] < 0.65)
         )
 
         df.loc[long_condition, "signal"] = TrendSignal.LONG.value

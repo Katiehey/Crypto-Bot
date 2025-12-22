@@ -1,5 +1,9 @@
 import time
 import pandas as pd
+import datetime
+from src.monitoring.logger import setup_logger
+from src.monitoring.alerts import AlertManager
+
 pd.set_option('future.no_silent_downcasting', True)
 
 from src.execution.paper_broker import PaperBroker
@@ -16,7 +20,7 @@ class TradingBot:
         symbol: str = "BTC/USDT",
         timeframe: str = "1d",
         sleep_seconds: int = 60 * 60 * 4,  # 4H
-        force_extreme_greed: bool = False,  # NEW toggle
+        force_extreme_greed: bool = False,
     ):
         self.symbol = symbol
         self.timeframe = timeframe
@@ -31,12 +35,24 @@ class TradingBot:
         self.router = StrategyRouter()
 
         self.position = None
+        self.starting_equity = self.broker.get_balance()["USDT"]
+
+        # Monitoring
+        self.logger = setup_logger("TradingBot", "trading_bot.log")
+        self.alerts = AlertManager(self.logger)
+
+        self.logger.info("Bot initialized | symbol=%s timeframe=%s", self.symbol, self.timeframe)
+
+        # Track last summary date
+        self.last_summary_date = None
 
     def run_once(self):
-        print("Fetching market data...")
-        df = self.broker.fetch_ohlcv(self.symbol, self.timeframe, limit=200)
-        #df.iloc[-1, df.columns.get_loc("volume")] = 5000  # force high volume
-
+        self.logger.info("Fetching market data...")
+        try:
+            df = self.broker.fetch_ohlcv(self.symbol, self.timeframe, limit=200)
+        except Exception as e:
+            self.alerts.send("CRITICAL", f"Exchange connection failure: {e}")
+            raise
 
         # --- Regime Detection ---
         regime_df = self.regime_detector.detect(df)
@@ -45,10 +61,10 @@ class TradingBot:
 
         # --- Sentiment ---
         if self.force_extreme_greed:
-            df["sentiment_norm"] = 0.8   # Force Extreme Greed
-            print("⚠️ Sentiment forced to Extreme Greed for testing")
+            df["sentiment_norm"] = 0.8
+            self.logger.warning("Sentiment forced to Extreme Greed for testing")
         else:
-            df["sentiment_norm"] = 0.5   # Neutral baseline
+            df["sentiment_norm"] = 0.5
 
         # --- Strategy Signals ---
         trend_signals = self.trend_strategy.generate_signals(df)
@@ -64,15 +80,19 @@ class TradingBot:
         latest = df.iloc[-1]
         latest_intent = intent_df.iloc[-1]
 
-        print(f"Regime: {latest['regime']}")
-        print(f"Intent: {latest_intent['intent']}")
-        print("Balance:", self.broker.get_balance())
-
-        print("Trend signal:", trend_signals.iloc[-1]["signal"])
-        print("Volume:", latest["volume"], "vs avg:", df["volume"].rolling(20).mean().iloc[-1])
+        self.logger.info(
+            f"Regime={latest['regime']} | Intent={latest_intent['intent']} | "
+            f"TrendSignal={trend_signals.iloc[-1]['signal']} | "
+            f"Volume={latest['volume']} vs avg={df['volume'].rolling(20).mean().iloc[-1]}"
+        )
 
         # --- Position Handling ---
         balance = self.broker.get_balance()["USDT"]
+
+        # Drawdown guard
+        if balance < self.starting_equity * 0.8:
+            self.alerts.send("CRITICAL", "Equity drawdown exceeded 20%. Bot halted.")
+            raise SystemExit()
 
         if self.position is None and latest_intent["intent"] == TradeIntent.LONG.value:
             entry_price = latest["close"]
@@ -89,31 +109,64 @@ class TradingBot:
                 entry_price=entry_price,
                 stop_price=stop_price,
             )
-            print("RiskManager diagnostics:", pos_info)
+            self.logger.info("RiskManager diagnostics: %s", pos_info)
 
             size = pos_info["size"]
             if size > 0:
-                self.broker.place_order(
-                    self.symbol,
-                    side="buy",
-                    amount=size,
-                    price=entry_price,
-                )
-                self.position = {
-                    "size": size,
-                    "entry_price": entry_price,
-                    "stop_price": stop_price,
-                }
-                print(f"Entered LONG: size={size}")
+                try:
+                    self.broker.place_order(
+                        self.symbol,
+                        side="buy",
+                        amount=size,
+                        price=entry_price,
+                    )
+                    self.position = {
+                        "size": size,
+                        "entry_price": entry_price,
+                        "stop_price": stop_price,
+                    }
+                    self.logger.info(
+                        f"Entering LONG | price={entry_price} size={size} stop={stop_price} regime={latest['regime']}"
+                    )
+                except Exception as e:
+                    self.alerts.send("CRITICAL", f"Order rejected: {e}")
             else:
-                print("Trade rejected. Reason:", pos_info["reason"])
-                print("Entry:", entry_price, "Stop:", stop_price)
+                self.logger.warning(
+                    f"Trade rejected | reason={pos_info['reason']} entry={entry_price} stop={stop_price}"
+                )
 
+        return intent_df  # return intents for summary
+
+    def send_daily_summary(self, results_df):
+        """Send daily PnL summary to Telegram at end of day."""
+        today = datetime.datetime.utcnow().date()
+        if "timestamp" not in results_df.columns or "pnl" not in results_df.columns:
+            self.logger.warning("No results available for summary")
+            return
+
+        pnl_today = results_df[results_df["timestamp"].dt.date == today]["pnl"].sum()
+        win_rate = (results_df[results_df["timestamp"].dt.date == today]["pnl"] > 0).mean()
+
+        summary_msg = (
+            f"📊 Daily Summary {today}\n"
+            f"PnL={pnl_today:.2f}\n"
+            f"WinRate={win_rate:.2%}"
+        )
+        self.alerts.send("INFO", summary_msg)
 
     def run(self):
-        print("Starting trading bot (paper mode)...")
+        self.logger.info("Starting trading bot (paper mode)...")
         while True:
-            self.run_once()
+            try:
+                results = self.run_once()
+                # Daily summary check
+                today = datetime.datetime.utcnow().date()
+                if self.last_summary_date != today:
+                    self.send_daily_summary(results)
+                    self.last_summary_date = today
+            except Exception as e:
+                self.alerts.send("CRITICAL", f"Bot crash: {e}")
+                raise
             time.sleep(self.sleep_seconds)
 
 
@@ -130,4 +183,3 @@ if __name__ == "__main__":
 
     bot = TradingBot(force_extreme_greed=args.force_greed)
     bot.run_once()  # run a single cycle for testing
-

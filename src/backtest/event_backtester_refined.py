@@ -5,6 +5,8 @@ import os
 pd.set_option('future.no_silent_downcasting', True)
 
 from src.risk.risk_manager import RiskManager, RiskConfig
+from src.monitoring.logger import setup_logger 
+from src.monitoring.alerts import AlertManager
 
 
 class EventBacktester:
@@ -28,6 +30,10 @@ class EventBacktester:
             (0.30, 3.0),  # exit remaining 25% at 3R 20
             (0.50, None), # exit remaining 50% at final exit 20
         ]
+
+        # Monitoring 
+        self.logger = setup_logger("EventBacktester", "event_backtester.log") 
+        self.alerts = AlertManager(self.logger)
 
     def run(self, df: pd.DataFrame, intent: pd.DataFrame, partial_exit_levels: list = None ) -> pd.DataFrame:
         equity = self.initial_capital
@@ -136,8 +142,8 @@ class EventBacktester:
                 if sentiment is not None and 0.80 <= sentiment < 0.90:  # GREED only
                     levels = partial_exit_levels or [
                         (0.50, 1.0),
-                        (0.50, 2.0),
-                        (0.0, 3.0),
+                        (0.30, 2.0),
+                        (0.20, 3.0),
                         (0.0, None),   # 50% trailing
                     ]
                 #40/30/15/15 (Aggressive early capture), 25/25/25/25 (Even distribution),20/30/20/30 (Trend‑biased capture),50/30/20/0* (No trailing, pure lock‑in),15/25/25/35 (Max trend capture with protection), 50,40,10,0 (Very aggressive early capture)
@@ -244,6 +250,10 @@ class EventBacktester:
                     "sentiment_bucket": sent_bucket,
                     "regime": row.get("regime", None),  
                 })
+
+                # --- NEW ALERT --- 
+                self.alerts.send("WARNING", f"Stop-loss triggered for {self.symbol}")
+
                 position = None
                 entry_price = None
                 stop_price = None
@@ -438,7 +448,10 @@ if __name__ == "__main__":
 
     intent = pd.read_csv(latest_file, index_col=0, parse_dates=True)
 
-    bt = EventBacktester(initial_capital=500)
+    logger = setup_logger("Backtest", "backtest.log") 
+    alerts = AlertManager(logger)
+
+    bt = EventBacktester(initial_capital=500, logger=logger, alerts=alerts)
     results = bt.run(df, intent)
 
     print("\nBacktest results (last 5 trades):")
@@ -473,77 +486,6 @@ if __name__ == "__main__":
 
     
 
-    # --- Exit strategy comparison ---
-    #comparison = test_exit_strategies(df, intent, bt)
-    #print("\nExit strategy comparison:")
-    #print(comparison)
+    
 
-    # import matplotlib.pyplot as plt
-
-    # def plot_equity_curves(df, intent, backtester):
-    #     plt.figure(figsize=(12,6))
-    #     for name, levels in EXIT_STRATEGIES.items():
-    #         df_results = backtester.run(df, intent, partial_exit_levels=levels)
-    #         plt.plot(df_results["equity"], label=name)
-    #     plt.title("Equity Curves by Exit Strategy")
-    #     plt.xlabel("Time")
-    #     plt.ylabel("Equity")
-    #     plt.legend()
-    #     plt.show()
-
-    # def plot_rolling_expectancy(df, intent, backtester, window=100):
-    #     plt.figure(figsize=(12,6))
-    #     for name, levels in EXIT_STRATEGIES.items():
-    #         df_results = backtester.run(df, intent, partial_exit_levels=levels)
-    #         trades = df_results[df_results["exit_type"].str.contains("PARTIAL|STOP|SIGNAL")]
-    #         rolling_exp = trades["pnl"].rolling(window).mean()
-    #         plt.plot(rolling_exp.values, label=name)
-    #     plt.title(f"Rolling Expectancy ({window} trades)")
-    #     plt.xlabel("Trade #")
-    #     plt.ylabel("Expectancy")
-    #     plt.axhline(0, color="red", linestyle="--")
-    #     plt.legend()
-    #     plt.show()
-    # # --- Call plotting functions ---
-    # plot_equity_curves(df, intent, bt)
-    # plot_rolling_expectancy(df, intent, bt, window=100)
-
-    # import numpy as np
-
-
-    # def plot_rolling_sharpe(df, intent, backtester, window=100):
-    #     plt.figure(figsize=(12,6))
-    #     for name, levels in EXIT_STRATEGIES.items():
-    #         df_results = backtester.run(df, intent, partial_exit_levels=levels)
-    #         trades = df_results[df_results["exit_type"].str.contains("PARTIAL|STOP|SIGNAL")]
-    #         rolling_mean = trades["pnl"].rolling(window).mean()
-    #         rolling_std = trades["pnl"].rolling(window).std()
-    #         rolling_sharpe = rolling_mean / rolling_std.replace(0, np.nan)
-    #         plt.plot(rolling_sharpe.values, label=name)
-
-    #     plt.title(f"Rolling Sharpe Ratio ({window} trades)")
-    #     plt.xlabel("Trade #")
-    #     plt.ylabel("Sharpe Ratio")
-    #     plt.axhline(0, color="red", linestyle="--")
-    #     plt.legend()
-    #     plt.show()
-
-    # # --- Call plotting functions ---
-    # plot_equity_curves(df, intent, bt)
-    # plot_rolling_expectancy(df, intent, bt, window=100)
-    # plot_rolling_sharpe(df, intent, bt, window=100)
-
-    # def plot_metric_comparison(comparison_df):
-    #     metrics = ["expectancy", "sharpe", "max_dd"]
-    #     comparison_df.set_index("strategy")[metrics].plot(kind="bar", figsize=(10,6))
-    #     plt.title("Exit Strategy Metric Comparison")
-    #     plt.ylabel("Metric Value")
-    #     plt.xticks(rotation=0)
-    #     plt.axhline(0, color="gray", linestyle="--")
-    #     plt.legend()
-    #     plt.tight_layout()
-    #     plt.show()
-
-    # --- Call it after comparison ---
-    #plot_metric_comparison(comparison)
-
+    

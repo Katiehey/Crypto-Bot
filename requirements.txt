@@ -4,3 +4,5 @@ numpy
 ta
 matplotlib
 scipy
+dotenv
+python-telegram-bot==13.7

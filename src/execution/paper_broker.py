@@ -2,6 +2,8 @@ import pandas as pd
 from datetime import datetime
 from src.execution.exchange import Exchange
 from typing import Optional, Dict, List, Any
+from src.monitoring.alerts import AlertManager 
+from src.monitoring.logger import setup_logger
 
 
 class PaperBroker(Exchange):
@@ -21,7 +23,12 @@ class PaperBroker(Exchange):
         self.ohlcv_data = pd.read_csv(self.data_path, parse_dates=["timestamp"])
         self.ohlcv_data.set_index("timestamp", inplace=True)
 
+        # Monitoring 
+        self.logger = setup_logger("PaperBroker", "paper_broker.log") 
+        self.alerts = AlertManager(self.logger)
+
     def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> pd.DataFrame:
+        #raise ConnectionError("Simulated exchange failure")
         return self.ohlcv_data.tail(limit).copy()
 
     def get_balance(self) -> Dict[str, float]:
@@ -34,7 +41,9 @@ class PaperBroker(Exchange):
         amount: float,
         price: Optional[float] = None,
         order_type: str = "market",
+        reason: str = None,   # NEW: reason for order (STOP, SIGNAL, etc.)
     ) -> Dict[str, Any]:
+        #raise ValueError("Order rejected: insufficient funds")
         order_id = str(self.next_order_id)
         self.next_order_id += 1
 
@@ -76,6 +85,9 @@ class PaperBroker(Exchange):
                 pos["amount"] -= amount
                 if pos["amount"] == 0:
                     self.positions.pop(symbol)
+                    # --- Trigger alert if stop-loss close --- 
+                    if reason == "STOP": 
+                        self.alerts.send("WARNING", f"Stop-loss triggered for {symbol}")
                 else:
                     self.positions[symbol] = pos
 
@@ -93,6 +105,7 @@ class PaperBroker(Exchange):
             "amount": amount,
             "balance": self.balance,
             "status": order["status"],
+            "reason": reason,
         })
 
         return order

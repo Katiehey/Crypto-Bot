@@ -6,3 +6,4 @@ matplotlib
 scipy
 dotenv
 python-telegram-bot==13.7
+PyYAML

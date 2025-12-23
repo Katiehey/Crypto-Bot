@@ -1,0 +1,29 @@
+mode: live
+
+exchange:
+  name: binance
+  sandbox: false
+
+broker:
+  type: ccxt
+
+safety:
+  require_manual_confirmation: true
+
+risk:
+  risk_per_trade: 0.01
+  max_position_pct: 0.25
+  max_daily_loss: 0.03
+  max_drawdown: 0.20
+  cooldown_bars: 1
+
+alerts:
+  channel: telegram
+  severity_levels:
+    - INFO
+    - WARNING
+    - CRITICAL
+
+monitoring:
+  structured_logs: true
+  failure_injection: disabled   # disable deliberate failures in live mode

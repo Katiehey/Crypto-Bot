@@ -33,7 +33,8 @@ class LiveBroker(Exchange):
         return df.set_index("timestamp")
 
     def get_balance(self):
-        return self.exchange.fetch_balance()
+        balances = self.exchange.fetch_balance() 
+        return {asset: balances["total"][asset] for asset in balances["total"]}
 
     def place_order(
         self,

@@ -1,0 +1,35 @@
+app:
+  name: hybrid-crypto-bot
+  timeframe: 1d
+  symbols:
+    - BTC/USDT
+
+risk:
+  risk_per_trade: 0.01        # 1% risk per trade
+  max_position_pct: 0.25      # 25% of equity in one position
+  max_daily_loss: 0.03        # 3% daily loss threshold
+  max_drawdown: 0.20          # 20% equity drawdown halt
+  cooldown_bars: 1            # skip 1 candle after stop-loss (revenge-trade guard)
+
+strategy:
+  trend:
+    fast_sma: 30
+    slow_sma: 150
+  mean_reversion:
+    rsi_low: 30
+    bb_window: 20
+
+runtime:
+  heartbeat_interval_sec: 60  # monitoring heartbeat
+  log_level: INFO             # structured logging level
+
+alerts:
+  channel: telegram           # alert routing (telegram/email/slack)
+  severity_levels:
+    - INFO
+    - WARNING
+    - CRITICAL
+
+monitoring:
+  structured_logs: true       # ensure logs are JSON/structured
+  failure_injection: enabled  # test kill switches and alert paths deliberately

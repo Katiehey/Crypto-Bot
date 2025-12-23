@@ -15,11 +15,13 @@ class AlertManager:
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
         if not self.telegram_token or not self.chat_id:
-            self.logger.warning("Telegram alerts disabled: missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
+            self.logger.warning(
+                "Telegram alerts disabled: missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID"
+            )
 
-    def send(self, level: str, message: str):
+    def send(self, level: str, message: str, include_info: bool = True):
         timestamp = datetime.datetime.utcnow().isoformat()
-        structured_msg = f"[ALERT - {level}] {timestamp} | {message}"
+        structured_msg = f"[ALERT - {level.upper()}] {timestamp} | {message}"
 
         # --- Log locally ---
         if level.upper() == "CRITICAL":
@@ -31,11 +33,20 @@ class AlertManager:
         else:
             self.logger.info(structured_msg)
 
-        # --- Send to Telegram only for actionable alerts ---
-        if self.telegram_token and self.chat_id and level.upper() in ["CRITICAL", "ERROR", "WARNING"]:
+        # --- Decide if we should send to Telegram ---
+        log_level = level.upper()
+        should_send = log_level in ["CRITICAL", "ERROR", "WARNING"]
+        if include_info and log_level == "INFO":
+            should_send = True
+
+        if self.telegram_token and self.chat_id and should_send:
             try:
                 url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
-                payload = {"chat_id": self.chat_id, "text": structured_msg}
+                payload = {
+                    "chat_id": self.chat_id,
+                    "text": structured_msg,
+                    "parse_mode": "Markdown",
+                }
                 resp = requests.post(url, json=payload, timeout=10)
                 if resp.status_code != 200:
                     self.logger.error(f"Telegram alert failed: {resp.text}")

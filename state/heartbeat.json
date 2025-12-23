@@ -1,0 +1,9 @@
+{
+  "timestamp": "2025-12-23T18:40:01.449435",
+  "status": "running",
+  "details": {
+    "symbol": "BTC/USDT",
+    "regime": "TREND",
+    "intent": "FLAT"
+  }
+}

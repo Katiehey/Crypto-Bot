@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  trader:
+    container_name: hybrid_crypto_bot
+    build: .
+    restart: always
+
+    # Load environment variables from .env file
+    env_file:
+      - .env
+
+    # Persist state, logs, and config across restarts
+    volumes:
+      - ./state:/app/state
+      - ./logs:/app/logs
+      - ./config:/app/config
+
+    # Resource limits (work on plain Docker Compose)
+    mem_limit: 512m
+    cpus: 1.0
+
+    # Healthcheck: ensures heartbeat.json is fresh (< 15 minutes old)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,json,datetime; f='state/heartbeat.json'; \
+        (not os.path.exists(f)) or \
+        (lambda j,t: (datetime.datetime.utcnow()-t).total_seconds()<900)( \
+          json.load(open(f)), \
+          datetime.datetime.fromisoformat(json.load(open(f))['timestamp'].replace('Z','')) \
+        )"]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+
+    # Default command (can override here if needed)
+    command: ["python", "-m", "src.app.trading_bot", "--mode", "paper", "--interval", "60"]

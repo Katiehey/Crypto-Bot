@@ -9,7 +9,7 @@ class StateStore:
         os.makedirs(os.path.dirname(path), exist_ok=True)
 
         if not os.path.exists(self.path):
-            self._write({
+            self.save({
                 "equity": 500,
                 "positions": {},
                 "trade_log": [],

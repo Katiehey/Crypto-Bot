@@ -1,7 +1,9 @@
 import os
 import time
 import pandas as pd
+import numpy as np
 import datetime
+import json
 from src.monitoring.logger import setup_logger
 from src.monitoring.alerts import AlertManager
 
@@ -31,7 +33,6 @@ class TradingBot:
         cooldown_bars: int = 1,  # number of bars to cooldown after stop-loss
     ):
         self.heartbeat = Heartbeat()
-        self.heartbeat.beat("STARTING")
         self.symbol = symbol
         self.timeframe = timeframe
         self.sleep_seconds = sleep_seconds
@@ -42,6 +43,8 @@ class TradingBot:
         # Load config
         self.config = ConfigLoader().load()
         self.mode = self.config["mode"]
+        self.summary_hour = int(os.getenv("SUMMARY_HOUR", "18")) 
+        self.summary_minute = int(os.getenv("SUMMARY_MINUTE", "0"))
 
         if self.mode == "paper": 
             self.broker = PaperBroker( 
@@ -59,11 +62,9 @@ class TradingBot:
             raise ConfigError(f"Unsupported mode: {self.mode}")
 
         # Core components
-        self.broker = PaperBroker()
         self.regime_detector = RegimeDetector()
         self.trend_strategy = TrendFollowingStrategy()
         self.mr_strategy = MeanReversionStrategy()
-        self.router = StrategyRouter()
 
         self.position = None
         self.starting_equity = self.broker.get_balance()["USDT"]
@@ -74,14 +75,32 @@ class TradingBot:
 
         self.logger.info("Bot initialized | symbol=%s timeframe=%s", self.symbol, self.timeframe)
 
+        self.strategy_router = StrategyRouter()
+
+        self.heartbeat.beat( 
+            status="STARTING", 
+            details={ 
+                "mode": self.mode, 
+                "symbol": self.symbol, 
+                "timeframe": self.timeframe, 
+            }, 
+        )
+
         # Track last summary date
         self.last_summary_date = None
 
     def check_daily_loss(self, results_df, threshold_pct=0.05):
         today = datetime.datetime.utcnow().date()
+
+        # Ensure timestamp column exists 
+        if "timestamp" not in results_df.columns: 
+            results_df = results_df.copy() 
+            results_df["timestamp"] = results_df.index
+
         pnl_today = results_df[results_df["timestamp"].dt.date == today]["pnl"].sum()
         if pnl_today < -threshold_pct * self.starting_equity:
-            self.alerts.send("CRITICAL", f"Daily loss exceeded {threshold_pct*100:.0f}%. Bot halted.")
+            self.alerts.send("CRITICAL", f"Daily loss exceeded {threshold_pct*100:.1f}% | pnl={pnl_today:.2f}")
+            self.heartbeat.beat("ERROR", {"error": "Daily loss threshold exceeded"})
             raise SystemExit()
         
     def update_consecutive_losses(self, trade_pnl):
@@ -100,6 +119,33 @@ class TradingBot:
             self.alerts.send("CRITICAL", "Unexpected position mismatch. Bot halted.")
             raise SystemExit()
 
+    def check_heartbeat_freshness(self, max_age_seconds: int = 900): 
+        """ Verify that heartbeat.json has been updated recently. 
+        max_age_seconds: allowed age in seconds (default 15 minutes). 
+        """ 
+        hb_path = os.path.join("state", "heartbeat.json") 
+        if not os.path.exists(hb_path): 
+            self.logger.warning("Heartbeat file missing") 
+            return False 
+        try: 
+            with open(hb_path, "r") as f: 
+                hb = json.load(f) 
+            ts = hb.get("timestamp") 
+            if not ts: 
+                self.logger.warning("Heartbeat missing timestamp") 
+                return False 
+            # Parse ISO timestamp 
+            ts_dt = datetime.datetime.fromisoformat(ts.replace("Z", "")) 
+            age = (datetime.datetime.utcnow() - ts_dt).total_seconds() 
+            if age > max_age_seconds: 
+                self.logger.error(f"Heartbeat stale: {age:.0f}s old") 
+                self.alerts.send("CRITICAL", f"Heartbeat stale: {age:.0f}s old") 
+                return False 
+            return True 
+        except Exception as e: 
+            self.logger.exception("Failed to check heartbeat freshness") 
+            return False
+
     def run_once(self):
         """Run a single cycle of the trading bot logic."""
         self.logger.info("Fetching market data...")
@@ -114,12 +160,39 @@ class TradingBot:
 
         try:
             df = self.broker.fetch_ohlcv(self.symbol, self.timeframe, limit=200)
-            # Strategy logic... 
-            regime, intent = self.strategy_router.route(df) 
+            regime_df = self.regime_detector.detect(df)
+            df = df.drop(columns=["trend_strength", "regime", "sentiment_norm"], errors="ignore") 
+            df = df.join(regime_df)
+
+
+            # --- Sentiment --- 
+            if self.force_extreme_greed: 
+                df["sentiment_norm"] = 0.8 
+                self.logger.warning("Sentiment forced to Extreme Greed for testing") 
+            else: 
+                df["sentiment_norm"] = 0.5
+
+            # --- Strategy Signals --- 
+            trend_signals = self.trend_strategy.generate_signals(df) 
+            mr_signals = self.mr_strategy.generate_signals(df) 
+            boll_signals = pd.DataFrame({ "signal": [None] * len(df), "stop_price": [None] * len(df), }, index=df.index) 
+            
+            # --- Route Intent --- 
+            intent_df = self.strategy_router.route(df, trend_signals, mr_signals, boll_signals) 
+            latest = df.iloc[-1] 
+            latest_intent = intent_df.iloc[-1]
+
             # Update heartbeat 
             self.heartbeat.beat( 
                 status="running", 
-                details={"symbol": self.symbol, "regime": regime, "intent": intent} 
+                details={"symbol": self.symbol, "regime": latest["regime"], "intent": latest_intent["intent"],
+                }, 
+            )
+
+            self.logger.info( 
+                f"Regime={latest['regime']} | Intent={latest_intent['intent']} | " 
+                f"TrendSignal={trend_signals.iloc[-1]['signal']} | " 
+                f"Volume={latest['volume']} vs avg={df['volume'].rolling(20).mean().iloc[-1]}" 
             )
 
         except Exception as e:
@@ -128,39 +201,6 @@ class TradingBot:
             self.alerts.send("CRITICAL", f"Exchange connection failure: {e}")
             raise
 
-        # --- Regime Detection ---
-        regime_df = self.regime_detector.detect(df)
-        df = df.drop(columns=["trend_strength", "regime", "sentiment_norm"], errors="ignore")
-        df = df.join(regime_df)
-
-        # --- Sentiment ---
-        if self.force_extreme_greed:
-            df["sentiment_norm"] = 0.8
-            self.logger.warning("Sentiment forced to Extreme Greed for testing")
-        else:
-            df["sentiment_norm"] = 0.5
-
-        # --- Strategy Signals ---
-        trend_signals = self.trend_strategy.generate_signals(df)
-        mr_signals = self.mr_strategy.generate_signals(df)
-        boll_signals = pd.DataFrame({
-            "signal": [None] * len(df),
-            "stop_price": [None] * len(df),
-        }, index=df.index)
-
-        # --- Route Intent ---
-        intent_df = self.router.route(df, trend_signals, mr_signals, boll_signals)
-
-        latest = df.iloc[-1]
-        latest_intent = intent_df.iloc[-1]
-
-        self.logger.info(
-            f"Regime={latest['regime']} | Intent={latest_intent['intent']} | "
-            f"TrendSignal={trend_signals.iloc[-1]['signal']} | "
-            f"Volume={latest['volume']} vs avg={df['volume'].rolling(20).mean().iloc[-1]}"
-        )
-
-        # --- Position Handling ---
         balance = self.broker.get_balance()["USDT"]
 
         # Drawdown guard
@@ -168,15 +208,14 @@ class TradingBot:
             self.alerts.send("CRITICAL", "Equity drawdown exceeded 20%. Bot halted.")
             self.heartbeat.beat("ERROR", {"error": "Equity drawdown exceeded 20%"})
             raise SystemExit()
-        
-        latest = df.iloc[-1]
 
-        # --- Cooldown guard --- 
-        if self.cooldown_until and latest.name <= self.cooldown_until: 
-            self.logger.info("Cooldown active, skipping trades") 
+        # --- Cooldown guard ---
+        if self.cooldown_until and latest.name <= self.cooldown_until:
+            self.logger.info("Cooldown active, skipping trades")
             self.heartbeat.beat("IDLE")
             return intent_df
 
+        # --- Entry logic ---
         if self.position is None and latest_intent["intent"] == TradeIntent.LONG.value:
             entry_price = latest["close"]
             stop_price = latest_intent["stop_price"]
@@ -194,104 +233,144 @@ class TradingBot:
             )
             self.logger.info("RiskManager diagnostics: %s", pos_info)
 
-            size = pos_info["size"]
-            if size > 0:
-                try:
-                    order = self.broker.place_order(
-                        self.symbol,
-                        side="buy",
-                        amount=size,
-                        price=entry_price,
-                    )
-                    self.position = {
-                        "size": size,
-                        "entry_price": entry_price,
-                        "stop_price": stop_price,
-                    }
-                    self.logger.info(
-                        f"Entering LONG | price={entry_price} size={size} stop={stop_price} regime={latest['regime']}"
-                    )
-                    self.heartbeat.beat( 
-                        status="TRADING", 
-                        details={ 
-                            "symbol": self.symbol, 
-                            "side": "buy", 
-                            "price": order.get("price"), 
-                        } 
-                    )
-                except Exception as e:
-                    self.alerts.send("CRITICAL", f"Order rejected: {e}")
-                    self.heartbeat.beat("ERROR", {"error": str(e)})
-            else:
-                self.logger.warning(
-                    f"Trade rejected | reason={pos_info['reason']} entry={entry_price} stop={stop_price}"
-                )
+            size = pos_info["size"] 
+            if size > 0: 
+                try: 
+                    order = self.broker.place_order( self.symbol, side="buy", amount=size, price=entry_price, ) 
+                    self.position = { "size": size, "entry_price": entry_price, "stop_price": stop_price, } 
+                    self.logger.info( f"Entering LONG | price={entry_price} size={size} stop={stop_price} regime={latest['regime']}" ) 
+                    self.heartbeat.beat( status="TRADING", details={ "symbol": self.symbol, "side": "buy", "price": order.get("price"), } ) 
+                except Exception as e: 
+                    self.alerts.send("CRITICAL", f"Order rejected: {e}") 
+                    self.heartbeat.beat("ERROR", {"error": str(e)}) 
+            else: 
+                self.logger.warning( f"Trade rejected | reason={pos_info['reason']} entry={entry_price} stop={stop_price}" ) 
                 self.heartbeat.beat("IDLE")
 
-        # --- Exit logic (example stop-loss + flat intent) --- 
-        if self.position is not None: 
-            # Stop-loss check 
-            if latest["low"] <= self.position["stop_price"]: 
-                exit_price = self.position["stop_price"] 
-                pnl = (exit_price - self.position["entry_price"]) * self.position["size"] 
-                self.alerts.send("WARNING", f"Stop-loss triggered for {self.symbol} | pnl={pnl:.2f}") 
-                # Kill switch checks 
-                self.update_consecutive_losses(pnl) 
-                self.check_position_consistency() 
-                self.position = None 
-
-                # --- NEW: set cooldown (configurable bars) --- 
-                idx_pos = df.index.get_loc(latest.name) 
-                if idx_pos + self.cooldown_bars < len(df.index): 
-                    self.cooldown_until = df.index[idx_pos + self.cooldown_bars]
-                
-                self.heartbeat.beat("IDLE")
-                return intent_df
-            # Flat intent check 
-            elif latest_intent["intent"] == TradeIntent.FLAT.value: 
-                exit_price = latest["close"] 
-                pnl = (exit_price - self.position["entry_price"]) * self.position["size"] 
-                self.logger.info(f"Exiting position | pnl={pnl:.2f}") 
-                # Kill switch checks 
-                self.update_consecutive_losses(pnl) 
-                self.check_position_consistency() 
+        # --- Exit logic ---
+        pnl = None
+        if self.position is not None:
+            # Stop-loss check
+            if latest["low"] <= self.position["stop_price"]:
+                exit_price = self.position["stop_price"]
+                pnl = (exit_price - self.position["entry_price"]) * self.position["size"]
+                self.alerts.send("WARNING", f"Stop-loss triggered for {self.symbol} | pnl={pnl:.2f}")
+                self.update_consecutive_losses(pnl)
+                self.check_position_consistency()
                 self.position = None
+
+                # --- NEW: record trade --- 
+                #trade_record = pd.DataFrame([{ "timestamp": latest.name, "pnl": pnl, "intent": latest_intent["intent"], "regime": latest["regime"] }])
+
+                # --- NEW: set cooldown ---
+                idx_pos = df.index.get_loc(latest.name)
+                if idx_pos + self.cooldown_bars < len(df.index):
+                    self.cooldown_until = df.index[idx_pos + self.cooldown_bars]
+
                 self.heartbeat.beat("IDLE")
+                #return trade_record
 
-        return intent_df  # return intents for summary
+            # Flat intent check
+            elif latest_intent["intent"] == TradeIntent.FLAT.value:
+                exit_price = latest["close"]
+                pnl = (exit_price - self.position["entry_price"]) * self.position["size"]
+                self.logger.info(f"Exiting position | pnl={pnl:.2f}")
+                self.update_consecutive_losses(pnl)
+                self.check_position_consistency()
+                self.position = None
 
+                # --- NEW: record trade --- 
+                #trade_record = pd.DataFrame([{ "timestamp": latest.name, "pnl": pnl, "intent": latest_intent["intent"], "regime": latest["regime"] }])
+
+                self.heartbeat.beat("IDLE")
+                #return trade_record
+
+        trade_record = pd.DataFrame([{ "timestamp": pd.to_datetime(latest.name), "pnl": float(pnl) if pnl is not None else np.nan, "intent": str(latest_intent["intent"]), "regime": str(latest["regime"]) }])
+        return trade_record
+
+        
     def send_daily_summary(self, results_df):
         """Send daily PnL summary to Telegram at end of day."""
         today = datetime.datetime.utcnow().date()
         if "timestamp" not in results_df.columns or "pnl" not in results_df.columns:
             self.logger.warning("No results available for summary")
             return
+        
+        # Filter today's trades 
+        todays_trades = results_df[results_df["timestamp"].dt.date == today]
 
-        pnl_today = results_df[results_df["timestamp"].dt.date == today]["pnl"].sum()
-        win_rate = (results_df[results_df["timestamp"].dt.date == today]["pnl"] > 0).mean()
+        if todays_trades.empty: 
+            self.logger.info("No trades today, skipping summary") 
+            return
+
+        pnl_today = todays_trades["pnl"].sum()
+        win_rate = (todays_trades["pnl"] > 0).mean()
+
+        # Optional Sharpe ratio if you have returns column 
+        sharpe = None 
+        if "returns" in todays_trades.columns: 
+            mean_ret = todays_trades["returns"].mean() 
+            std_ret = todays_trades["returns"].std() 
+            if std_ret and std_ret > 0: 
+                sharpe = (mean_ret / std_ret) * (252 ** 0.5) # annualized
 
         summary_msg = (
             f"📊 Daily Summary {today}\n"
+            f"*Symbol:* {self.symbol}\n"
+            f"*Timeframe:* {self.timeframe}\n"
+            f"*Mode:* {self.mode}\n"
             f"PnL={pnl_today:.2f}\n"
             f"WinRate={win_rate:.2%}"
         )
-        self.alerts.send("INFO", summary_msg)
+        if sharpe is not None:
+            summary_msg += f"\nSharpe={sharpe:.2f}"
+
+        # Log locally 
+        self.logger.info(summary_msg)
+
+        self.alerts.send("INFO", summary_msg, include_info=True)
 
     def run(self):
         self.logger.info("Starting trading bot (paper mode)...")
+        results_history = pd.DataFrame(columns=["timestamp", "pnl", "intent", "regime"])
         try:
             while True:
                 try:
-                    results = self.run_once()
+                    # 🔎 Heartbeat at start of cycle 
+                    self.heartbeat.beat( 
+                        status="RUNNING", 
+                        details={ 
+                            "mode": self.mode, 
+                            "symbol": self.symbol, 
+                            "timeframe": self.timeframe, 
+                        }, 
+                    )
+
+                    # 🔎 Watchdog check 
+                    if not self.check_heartbeat_freshness(): 
+                        self.logger.error("Heartbeat watchdog triggered") 
+                        raise SystemExit("Stale heartbeat detected")
+
+                    trade_record = self.run_once()
+
+                    if results_history.empty:
+                        results_history = trade_record
+                    else:
+                        results_history = pd.concat([results_history, trade_record], ignore_index=True)
+
                     # Risk checks
-                    self.check_daily_loss(results, threshold_pct=0.05)
+                    self.check_daily_loss(results_history, threshold_pct=0.05)
                     self.check_position_consistency()
 
-                    # Daily summary check
-                    today = datetime.datetime.utcnow().date()
-                    if self.last_summary_date != today:
-                        self.send_daily_summary(results)
-                        self.last_summary_date = today
+                    # 🔎 Scheduled daily summary check 
+                    now = datetime.datetime.utcnow() 
+                    if ( 
+                        now.hour == self.summary_hour 
+                        and now.minute == self.summary_minute 
+                        and self.last_summary_date != now.date() 
+                        ): 
+                        self.send_daily_summary(results_history) 
+                        self.last_summary_date = now.date()
 
                 except Exception as e:
                     self.logger.exception("Bot crashed during cycle")
@@ -342,7 +421,7 @@ if __name__ == "__main__":
     bot = TradingBot()
 
     try:
-        bot.run(interval=args.interval)  # continuous run loop
+        bot.run()  # continuous run loop
     except KeyboardInterrupt:
         bot.logger.info("Bot stopped by user")
         bot.heartbeat.beat("STOPPED")

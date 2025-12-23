@@ -17,6 +17,7 @@ from src.config.config import ConfigError, ConfigLoader
 from src.execution.paper_broker import PaperBroker 
 from src.execution.live_broker import LiveBroker
 from src.state.state_store import StateStore
+from src.monitoring.heartbeat import Heartbeat
 
 
 
@@ -29,6 +30,8 @@ class TradingBot:
         force_extreme_greed: bool = False,
         cooldown_bars: int = 1,  # number of bars to cooldown after stop-loss
     ):
+        self.heartbeat = Heartbeat()
+        self.heartbeat.beat("STARTING")
         self.symbol = symbol
         self.timeframe = timeframe
         self.sleep_seconds = sleep_seconds
@@ -98,10 +101,30 @@ class TradingBot:
             raise SystemExit()
 
     def run_once(self):
+        """Run a single cycle of the trading bot logic."""
         self.logger.info("Fetching market data...")
+        self.heartbeat.beat(
+            status="RUNNING",
+            details={
+                "mode": self.mode,
+                "symbol": self.symbol,
+                "timeframe": self.timeframe,
+            },
+        )
+
         try:
             df = self.broker.fetch_ohlcv(self.symbol, self.timeframe, limit=200)
+            # Strategy logic... 
+            regime, intent = self.strategy_router.route(df) 
+            # Update heartbeat 
+            self.heartbeat.beat( 
+                status="running", 
+                details={"symbol": self.symbol, "regime": regime, "intent": intent} 
+            )
+
         except Exception as e:
+            self.logger.exception("Bot crashed")
+            self.heartbeat.beat(status="error", details={"error": str(e)})
             self.alerts.send("CRITICAL", f"Exchange connection failure: {e}")
             raise
 
@@ -143,6 +166,7 @@ class TradingBot:
         # Drawdown guard
         if balance < self.starting_equity * 0.8:
             self.alerts.send("CRITICAL", "Equity drawdown exceeded 20%. Bot halted.")
+            self.heartbeat.beat("ERROR", {"error": "Equity drawdown exceeded 20%"})
             raise SystemExit()
         
         latest = df.iloc[-1]
@@ -150,6 +174,7 @@ class TradingBot:
         # --- Cooldown guard --- 
         if self.cooldown_until and latest.name <= self.cooldown_until: 
             self.logger.info("Cooldown active, skipping trades") 
+            self.heartbeat.beat("IDLE")
             return intent_df
 
         if self.position is None and latest_intent["intent"] == TradeIntent.LONG.value:
@@ -172,7 +197,7 @@ class TradingBot:
             size = pos_info["size"]
             if size > 0:
                 try:
-                    self.broker.place_order(
+                    order = self.broker.place_order(
                         self.symbol,
                         side="buy",
                         amount=size,
@@ -186,12 +211,22 @@ class TradingBot:
                     self.logger.info(
                         f"Entering LONG | price={entry_price} size={size} stop={stop_price} regime={latest['regime']}"
                     )
+                    self.heartbeat.beat( 
+                        status="TRADING", 
+                        details={ 
+                            "symbol": self.symbol, 
+                            "side": "buy", 
+                            "price": order.get("price"), 
+                        } 
+                    )
                 except Exception as e:
                     self.alerts.send("CRITICAL", f"Order rejected: {e}")
+                    self.heartbeat.beat("ERROR", {"error": str(e)})
             else:
                 self.logger.warning(
                     f"Trade rejected | reason={pos_info['reason']} entry={entry_price} stop={stop_price}"
                 )
+                self.heartbeat.beat("IDLE")
 
         # --- Exit logic (example stop-loss + flat intent) --- 
         if self.position is not None: 
@@ -209,7 +244,9 @@ class TradingBot:
                 idx_pos = df.index.get_loc(latest.name) 
                 if idx_pos + self.cooldown_bars < len(df.index): 
                     self.cooldown_until = df.index[idx_pos + self.cooldown_bars]
-
+                
+                self.heartbeat.beat("IDLE")
+                return intent_df
             # Flat intent check 
             elif latest_intent["intent"] == TradeIntent.FLAT.value: 
                 exit_price = latest["close"] 
@@ -219,6 +256,7 @@ class TradingBot:
                 self.update_consecutive_losses(pnl) 
                 self.check_position_consistency() 
                 self.position = None
+                self.heartbeat.beat("IDLE")
 
         return intent_df  # return intents for summary
 
@@ -241,42 +279,76 @@ class TradingBot:
 
     def run(self):
         self.logger.info("Starting trading bot (paper mode)...")
-        while True:
-            try:
-                results = self.run_once()
-                self.check_daily_loss(results, threshold_pct=0.05)
-                self.check_position_consistency()
-                # Daily summary check
-                today = datetime.datetime.utcnow().date()
-                if self.last_summary_date != today:
-                    self.send_daily_summary(results)
-                    self.last_summary_date = today
-            except Exception as e:
-                self.alerts.send("CRITICAL", f"Bot crash: {e}")
-                raise
-            time.sleep(self.sleep_seconds)
+        try:
+            while True:
+                try:
+                    results = self.run_once()
+                    # Risk checks
+                    self.check_daily_loss(results, threshold_pct=0.05)
+                    self.check_position_consistency()
+
+                    # Daily summary check
+                    today = datetime.datetime.utcnow().date()
+                    if self.last_summary_date != today:
+                        self.send_daily_summary(results)
+                        self.last_summary_date = today
+
+                except Exception as e:
+                    self.logger.exception("Bot crashed during cycle")
+                    self.heartbeat.beat("ERROR", {"error": str(e)})
+                    self.alerts.send("CRITICAL", f"Bot crash: {e}")
+                    raise  # re-raise to stop loop
+
+                time.sleep(self.sleep_seconds)
+
+        except KeyboardInterrupt:
+            # Clean shutdown
+            self.logger.info("Bot stopped by user")
+            self.heartbeat.beat("STOPPED")
+
+        except SystemExit:
+            # Explicit halt (e.g. drawdown guard)
+            self.logger.warning("Bot halted by system exit")
+            self.heartbeat.beat("STOPPED")
+            raise
 
 
 import argparse
 
+import argparse
+import os
+import time
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run the trading bot in paper mode")
-    parser.add_argument( 
-        "--mode", 
-        choices=["paper", "sandbox", "live"], 
-        help="Override BOT_MODE (paper, sandbox, live)", 
+    parser = argparse.ArgumentParser(description="Run the trading bot")
+    parser.add_argument(
+        "--mode",
+        choices=["paper", "sandbox", "live"],
+        help="Override BOT_MODE (paper, sandbox, live)",
     )
     parser.add_argument(
-        "--force-greed",
-        action="store_true",
-        help="Force sentiment to Extreme Greed (>=0.75) for testing trades",
+        "--interval",
+        type=int,
+        default=60,
+        help="Sleep interval between cycles in seconds (default: 60)",
     )
     args = parser.parse_args()
 
-    # If CLI flag is set, override BOT_MODE environment variable 
-    #if args.mode: 
-    #    os.environ["BOT_MODE"] = args.mode#e.g python trading_bot.py --mode paper
+    # If CLI flag is set, override BOT_MODE environment variable
+    if args.mode:
+        os.environ["BOT_MODE"] = args.mode  # e.g. python trading_bot.py --mode paper
 
+    # Initialize bot (no force_extreme_greed anymore)
+    bot = TradingBot()
 
-    bot = TradingBot(force_extreme_greed=args.force_greed)
-    bot.run_once()  # run a single cycle for testing
+    try:
+        bot.run(interval=args.interval)  # continuous run loop
+    except KeyboardInterrupt:
+        bot.logger.info("Bot stopped by user")
+        bot.heartbeat.beat("STOPPED")
+    except Exception as e:
+        bot.logger.exception("Bot crashed")
+        bot.heartbeat.beat("ERROR", {"error": str(e)})
+        bot.alerts.send("CRITICAL", f"Bot crashed: {e}")
+        raise
+

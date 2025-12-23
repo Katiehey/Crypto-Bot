@@ -4,6 +4,7 @@ from src.execution.exchange import Exchange
 from typing import Optional, Dict, List, Any
 from src.monitoring.alerts import AlertManager 
 from src.monitoring.logger import setup_logger
+from src.state.state_store import StateStore
 
 
 class PaperBroker(Exchange):
@@ -11,13 +12,20 @@ class PaperBroker(Exchange):
         self,
         starting_balance: float = 500.0,
         data_path: str = "data/btc_usdt_features.csv",
+        state_path: str = "state/paper_state.json",
     ):
         self.balance = starting_balance
         self.positions: Dict[str, Dict[str, Any]] = {}
         self.trade_log: List[Dict[str, Any]] = []
         self.data_path = data_path 
-        self.open_orders: Dict[str, Dict[str, Any]] = {}  # track open orders
-        self.next_order_id = 1
+        # --- State persistence ---
+        self.state_store = StateStore(state_path)
+        state = self.state_store.load()
+        self.balance = state.get("equity", starting_balance) 
+        self.positions: Dict[str, Dict[str, Any]] = state.get("positions", {})
+        self.trade_log: List[Dict[str, Any]] = state.get("trade_log", [])
+        self.open_orders: Dict[str, Dict[str, Any]] = {}
+        self.next_order_id = len(self.trade_log) + 1
 
         # preload OHLCV data
         self.ohlcv_data = pd.read_csv(self.data_path, parse_dates=["timestamp"])
@@ -26,6 +34,15 @@ class PaperBroker(Exchange):
         # Monitoring 
         self.logger = setup_logger("PaperBroker", "paper_broker.log") 
         self.alerts = AlertManager(self.logger)
+
+    def _persist_state(self): 
+        """Save current broker state to JSON file.""" 
+        state = { 
+            "equity": self.balance, 
+            "positions": self.positions, 
+            "trade_log": self.trade_log, 
+            } 
+        self.state_store.save(state)
 
     def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> pd.DataFrame:
         #raise ConnectionError("Simulated exchange failure")
@@ -108,6 +125,9 @@ class PaperBroker(Exchange):
             "reason": reason,
         })
 
+        # --- Persist state after every trade --- 
+        self._persist_state()
+
         return order
 
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
@@ -115,6 +135,7 @@ class PaperBroker(Exchange):
         if not order:
             return {"status": "not_found", "order_id": order_id}
         order["status"] = "cancelled"
+        self._persist_state()
         return order
 
     def get_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:

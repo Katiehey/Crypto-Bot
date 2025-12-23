@@ -16,6 +16,7 @@ from src.risk.risk_manager import RiskManager, RiskConfig
 from src.config.config import ConfigError, ConfigLoader
 from src.execution.paper_broker import PaperBroker 
 from src.execution.live_broker import LiveBroker
+from src.state.state_store import StateStore
 
 
 
@@ -273,8 +274,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # If CLI flag is set, override BOT_MODE environment variable 
-    if args.mode: 
-        os.environ["BOT_MODE"] = args.mode#e.g python trading_bot.py --mode paper
+    #if args.mode: 
+    #    os.environ["BOT_MODE"] = args.mode#e.g python trading_bot.py --mode paper
 
 
     bot = TradingBot(force_extreme_greed=args.force_greed)

@@ -1,9 +1,13 @@
-version: "3.9"
+#version: "3.9"
 
 services:
   trader:
     container_name: hybrid_crypto_bot
-    build: .
+    build: 
+      context: . 
+      args: 
+        UID: ${UID} 
+        GID: ${GID}
     restart: always
 
     # Load environment variables from .env file
@@ -15,6 +19,7 @@ services:
       - ./state:/app/state
       - ./logs:/app/logs
       - ./config:/app/config
+      - ./backups:/app/backups
 
     # Resource limits (work on plain Docker Compose)
     mem_limit: 512m

@@ -20,6 +20,7 @@ from src.execution.paper_broker import PaperBroker
 from src.execution.live_broker import LiveBroker
 from src.state.state_store import StateStore
 from src.monitoring.heartbeat import Heartbeat
+from src.infra.backup_manager import create_backup
 
 
 
@@ -45,6 +46,8 @@ class TradingBot:
         self.mode = self.config["mode"]
         self.summary_hour = int(os.getenv("SUMMARY_HOUR", "18")) 
         self.summary_minute = int(os.getenv("SUMMARY_MINUTE", "0"))
+        self.last_backup = 0 
+        self.backup_interval = 60 * 60 # hourly
 
         if self.mode == "paper": 
             self.broker = PaperBroker( 
@@ -145,6 +148,13 @@ class TradingBot:
         except Exception as e: 
             self.logger.exception("Failed to check heartbeat freshness") 
             return False
+
+    def maybe_backup(self):
+        now = time.time()
+        if now - self.last_backup > self.backup_interval:
+            create_backup()
+            self.last_backup = now
+            self.logger.info("Backup created successfully")
 
     def run_once(self):
         """Run a single cycle of the trading bot logic."""
@@ -371,6 +381,11 @@ class TradingBot:
                         ): 
                         self.send_daily_summary(results_history) 
                         self.last_summary_date = now.date()
+
+                    results_history.to_csv("state/results_history.csv", index=False)
+
+                    # 🔎 Maybe create backup
+                    self.maybe_backup()
 
                 except Exception as e:
                     self.logger.exception("Bot crashed during cycle")

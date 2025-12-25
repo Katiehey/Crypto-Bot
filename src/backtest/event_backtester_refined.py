@@ -12,7 +12,7 @@ from src.monitoring.alerts import AlertManager
 class EventBacktester:
     def __init__(
         self,
-        initial_capital: float = 500.0,
+        initial_capital: float = 100.0,
         risk_per_trade: float = 0.003,
         slippage: float = 0.0003,
         fee: float = 0.0004,
@@ -21,6 +21,11 @@ class EventBacktester:
         self.risk_per_trade = risk_per_trade
         self.slippage = slippage
         self.fee = fee
+
+        # --- State tracking --- 
+        self.equity = initial_capital 
+        self.positions = {} 
+        self.trade_log = []
 
         # --- Multi-stage partial exits ---
         # Format: (fraction_of_position, R_multiple)

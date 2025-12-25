@@ -4,13 +4,13 @@ from datetime import datetime
 
 
 class StateStore:
-    def __init__(self, path="state/paper_state.json"):
+    def __init__(self, path="state/paper_state.json", initial_equity: float = 100.0):
         self.path = path
         os.makedirs(os.path.dirname(path), exist_ok=True)
 
         if not os.path.exists(self.path):
             self.save({
-                "equity": 500,
+                "equity": initial_equity,
                 "positions": {},
                 "trade_log": [],
                 "last_update": None,

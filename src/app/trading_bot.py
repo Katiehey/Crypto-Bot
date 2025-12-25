@@ -21,6 +21,7 @@ from src.execution.live_broker import LiveBroker
 from src.state.state_store import StateStore
 from src.monitoring.heartbeat import Heartbeat
 from src.infra.backup_manager import create_backup
+from src.backtest.event_backtester_refined import EventBacktester
 
 
 
@@ -49,11 +50,27 @@ class TradingBot:
         self.last_backup = 0 
         self.backup_interval = 60 * 60 # hourly
 
+        # --- Centralized initial balance --- 
+        initial_balance = ( 
+            self.config.get("account", {}).get("initial_balance") 
+            or self.config.get("risk", {}).get("starting_balance") 
+            or 100.0 
+        )
+
         if self.mode == "paper": 
             self.broker = PaperBroker( 
-                starting_balance=self.config["risk"].get("starting_balance", 500.0), 
+                starting_balance=initial_balance,
                 data_path=self.config["exchange"].get("data_path", "data/btc_usdt_features.csv"), 
-                ) 
+            ) 
+            self.state = StateStore( 
+                path="state/paper_state.json", 
+                initial_equity=initial_balance, 
+            ) 
+            self.backtester = EventBacktester( 
+                initial_capital=initial_balance, 
+                risk_per_trade=self.config["risk"].get("risk_per_trade", 0.01), 
+            )
+            
         elif self.mode in {"sandbox", "live"}: 
             self.broker = LiveBroker( 
                 exchange_name=self.config["exchange"]["name"], 

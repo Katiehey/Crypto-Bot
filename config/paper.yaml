@@ -7,6 +7,9 @@ exchange:
 broker:
   type: paper
 
+account: 
+  initial_balance: 100
+
 alerts:
   channel: telegram
   severity_levels:

@@ -10,7 +10,7 @@ from src.state.state_store import StateStore
 class PaperBroker(Exchange):
     def __init__(
         self,
-        starting_balance: float = 500.0,
+        starting_balance: float = 100.0,
         data_path: str = "data/btc_usdt_features.csv",
         state_path: str = "state/paper_state.json",
     ):
@@ -19,7 +19,7 @@ class PaperBroker(Exchange):
         self.trade_log: List[Dict[str, Any]] = []
         self.data_path = data_path 
         # --- State persistence ---
-        self.state_store = StateStore(state_path)
+        self.state_store = StateStore(state_path, initial_equity=starting_balance)
         state = self.state_store.load()
         self.balance = state.get("equity", starting_balance) 
         self.positions: Dict[str, Dict[str, Any]] = state.get("positions", {})

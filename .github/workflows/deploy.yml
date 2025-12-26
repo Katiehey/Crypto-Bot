@@ -22,5 +22,5 @@ jobs:
           cd /home/ubuntu/bots/crypto-bot || exit 1
           git fetch origin main
           git reset --hard origin/main
-          docker compose build
-          docker compose up -d
+          docker-compose build
+          docker-compose up -d

@@ -123,7 +123,7 @@ bash
 ls -l state/
 7. Cleanup when needed
 bash
-docker compose down
+docker compose down.
 docker system prune -f
 Stops containers and removes unused images/volumes.
 

@@ -22,5 +22,6 @@ jobs:
           cd /home/ubuntu/bots/crypto-bot || exit 1
           git fetch origin main
           git reset --hard origin/main
+          /usr/bin/docker-compose down --remove-orphans
           /usr/bin/docker-compose build
            /usr/bin/docker-compose up -d

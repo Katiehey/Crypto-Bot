@@ -105,6 +105,7 @@ class TradingBot:
                 "timeframe": self.timeframe, 
             }, 
         )
+        self.alerts.send("INFO", f"🚀 {self.symbol} bot started in {self.mode} mode", include_info=True)
 
         # Track last summary date
         self.last_summary_date = None

@@ -408,7 +408,7 @@ class TradingBot:
                 except Exception as e:
                     self.logger.exception("Bot crashed during cycle")
                     self.heartbeat.beat("ERROR", {"error": str(e)})
-                    self.alerts.send("CRITICAL", f"Bot crash: {e}")
+                    self.alerts.send("CRITICAL", f"💥 {self.symbol} Bot crash: {e}")
                     raise  # re-raise to stop loop
 
                 time.sleep(self.sleep_seconds)
@@ -417,11 +417,13 @@ class TradingBot:
             # Clean shutdown
             self.logger.info("Bot stopped by user")
             self.heartbeat.beat("STOPPED")
+            self.alerts.send("INFO", f"🛑 {self.symbol} bot stopped by user", include_info=True)
 
         except SystemExit:
             # Explicit halt (e.g. drawdown guard)
             self.logger.warning("Bot halted by system exit")
             self.heartbeat.beat("STOPPED")
+            self.alerts.send("CRITICAL", f"🛑 {self.symbol} bot halted due to safety condition")
             raise
 
 
@@ -458,9 +460,10 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         bot.logger.info("Bot stopped by user")
         bot.heartbeat.beat("STOPPED")
+        bot.alerts.send("INFO", f"🛑 {bot.symbol} bot stopped by user", include_info=True)
     except Exception as e:
         bot.logger.exception("Bot crashed")
         bot.heartbeat.beat("ERROR", {"error": str(e)})
-        bot.alerts.send("CRITICAL", f"Bot crashed: {e}")
+        bot.alerts.send("CRITICAL", f"🛑 {bot.symbol} bot halted due to safety condition")
         raise
 

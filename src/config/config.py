@@ -14,6 +14,13 @@ class ConfigError(Exception):
 
 
 class ConfigLoader:
+    """Merges base.yaml + mode-specific YAML + environment variable overrides.
+
+    BOT_MODE must be set to "paper", "sandbox", or "live" before instantiation.
+    API credentials for sandbox/live modes are injected from env vars, never
+    stored in YAML files.
+    """
+
     def __init__(self):
         self.mode = os.getenv("BOT_MODE")
         if not self.mode:

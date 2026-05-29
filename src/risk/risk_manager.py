@@ -4,6 +4,8 @@ from typing import Dict, Any
 
 @dataclass
 class RiskConfig:
+    """Parameters that govern how much capital is risked per trade."""
+
     # Defaults can be overridden by StrategyRouter per-strategy allocations
     risk_per_trade: float = 0.01     # fraction of equity risked per trade
     max_position_pct: float = 0.25   # max % of equity in one position
@@ -12,6 +14,14 @@ class RiskConfig:
 
 
 class RiskManager:
+    """Translates a stop-loss distance into a safe position size.
+
+    Enforces three hard limits in order:
+    1. Risk budget — equity × risk_per_trade / (entry − stop).
+    2. Exposure cap — equity × max_position_pct / entry.
+    3. Exchange minimum — rejects trades below min_trade_value.
+    """
+
     def __init__(self, config: RiskConfig):
         self.config = config
 

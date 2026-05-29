@@ -17,6 +17,13 @@ class Strategy(Enum):
 
 
 class RegimeDetector:
+    """Classifies each bar as TREND, RANGE, or UNCERTAIN.
+
+    Uses the separation between a fast and slow SMA (normalised by ATR) as the
+    primary signal, then layers in a sentiment filter to restrict which
+    strategies are enabled at each regime level.
+    """
+
     def __init__(
         self,
         sma_fast_window: int = 20,

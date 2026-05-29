@@ -12,6 +12,14 @@ class TradeIntent(Enum):
 
 
 class StrategyRouter:
+    """Selects the highest-quality trade intent for each bar.
+
+    Applies regime, sentiment, volume-breakout, and trend-strength gates
+    before committing to a LONG intent. Only TREND regime entries are active
+    in the current implementation; RANGE and BOLLINGER are reserved for future
+    strategies.
+    """
+
     def __init__(self):
         # Fixed risk buckets for TREND only
         self.trend_risk_strict = 0.006
@@ -24,6 +32,18 @@ class StrategyRouter:
         mr_signals: pd.DataFrame = None,
         boll_signals: pd.DataFrame = None,
     ) -> pd.DataFrame:
+        """Combine strategy signals into a final per-bar trade intent.
+
+        Args:
+            df: OHLCV DataFrame with regime, sentiment_norm, volume, and ATR columns.
+            trend_signals: Output of TrendFollowingStrategy.generate_signals().
+            mr_signals: Output of MeanReversionStrategy (unused, reserved).
+            boll_signals: Output of BollingerStrategy (unused, reserved).
+
+        Returns:
+            DataFrame indexed like df with columns: intent, stop_price, source,
+            risk_per_trade.
+        """
 
         result = pd.DataFrame(index=df.index)
         result["intent"] = TradeIntent.FLAT.value

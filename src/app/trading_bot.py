@@ -26,6 +26,14 @@ from src.backtest.event_backtester_refined import EventBacktester
 
 
 class TradingBot:
+    """Top-level orchestrator that runs the paper-trading loop.
+
+    Each cycle fetches OHLCV data, detects the market regime, routes strategy
+    signals, sizes positions via RiskManager, and delegates execution to the
+    configured broker (paper or live). Safety guards (drawdown halt, daily loss
+    limit, heartbeat watchdog, consecutive-loss cooldown) run after every cycle.
+    """
+
     def __init__(
         self,
         symbol: str = "BTC/USDT",
@@ -111,6 +119,7 @@ class TradingBot:
         self.last_summary_date = None
 
     def check_daily_loss(self, results_df, threshold_pct=0.05):
+        """Halt the bot if today's realised PnL exceeds the daily loss threshold."""
         today = datetime.datetime.utcnow().date()
 
         # Ensure timestamp column exists 
@@ -125,6 +134,7 @@ class TradingBot:
             raise SystemExit()
         
     def update_consecutive_losses(self, trade_pnl):
+        """Track consecutive losses and pause the bot for 24 h after three in a row."""
         if trade_pnl < 0:
             self.consecutive_losses += 1
         else:
@@ -135,6 +145,7 @@ class TradingBot:
             time.sleep(86400)  # pause for 1 day
 
     def check_position_consistency(self):
+        """Halt if the bot's internal position state diverges from the broker's records."""
         broker_pos = self.broker.get_positions(self.symbol)
         if self.position and not broker_pos.get(self.symbol):
             self.alerts.send("CRITICAL", "Unexpected position mismatch. Bot halted.")
@@ -168,6 +179,7 @@ class TradingBot:
             return False
 
     def maybe_backup(self):
+        """Create a state backup if more than backup_interval seconds have passed."""
         now = time.time()
         if now - self.last_backup > self.backup_interval:
             create_backup()
@@ -359,6 +371,7 @@ class TradingBot:
         self.alerts.send("INFO", summary_msg, include_info=True)
 
     def run(self):
+        """Start the continuous trading loop. Runs until halted by a safety guard or KeyboardInterrupt."""
         self.logger.info("Starting trading bot (paper mode)...")
         results_history = pd.DataFrame(columns=["timestamp", "pnl", "intent", "regime"])
         try:

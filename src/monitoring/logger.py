@@ -3,6 +3,19 @@ from logging.handlers import RotatingFileHandler
 import os
 
 def setup_logger(name: str, log_file: str, level=logging.INFO):
+    """Create a rotating file logger that also writes to stdout.
+
+    Creates the logs/ directory if it does not exist. Resets handlers on
+    repeated calls so the same logger name can be re-initialised safely.
+
+    Args:
+        name: Logger name (used as the %(name)s field in log lines).
+        log_file: Filename within the logs/ directory (e.g. "trading_bot.log").
+        level: Logging level; defaults to INFO.
+
+    Returns:
+        Configured logging.Logger instance.
+    """
     os.makedirs("logs", exist_ok=True)
 
     formatter = logging.Formatter(
@@ -21,13 +34,15 @@ def setup_logger(name: str, log_file: str, level=logging.INFO):
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
-    if not any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
-        logger.addHandler(handler)
+    # Always reset handlers to avoid duplicates 
+    logger.handlers = []
 
-    # Console handler for real-time visibility
-    if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(formatter)
-        logger.addHandler(console_handler)
+    # File handler 
+    logger.addHandler(handler)
+
+    # Console handler (stdout) 
+    console_handler = logging.StreamHandler() 
+    console_handler.setFormatter(formatter) 
+    logger.addHandler(console_handler)
 
     return logger

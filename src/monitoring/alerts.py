@@ -8,6 +8,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class AlertManager:
+    """Routes structured alerts to local logs and Telegram.
+
+    Credentials are read from TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars.
+    If either is absent, Telegram delivery is silently skipped.
+    """
+
     def __init__(self, logger: logging.Logger):
         self.logger = logger
         # Read secrets from environment
@@ -20,6 +26,13 @@ class AlertManager:
             )
 
     def send(self, level: str, message: str, include_info: bool = True):
+        """Log an alert locally and forward it to Telegram if the level warrants it.
+
+        Args:
+            level: Severity string — INFO, WARNING, ERROR, or CRITICAL.
+            message: Human-readable alert body.
+            include_info: When True, INFO-level messages are also sent to Telegram.
+        """
         timestamp = datetime.datetime.utcnow().isoformat()
         structured_msg = f"[ALERT - {level.upper()}] {timestamp} | {message}"
 

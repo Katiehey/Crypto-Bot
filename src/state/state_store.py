@@ -4,6 +4,12 @@ from datetime import datetime
 
 
 class StateStore:
+    """Persists broker state (equity, positions, trade log) to a JSON file.
+
+    Creates the file with sensible defaults on first run so the bot starts
+    cleanly without manual setup.
+    """
+
     def __init__(self, path="state/paper_state.json", initial_equity: float = 100.0):
         self.path = path
         os.makedirs(os.path.dirname(path), exist_ok=True)

@@ -8,6 +8,13 @@ from src.state.state_store import StateStore
 
 
 class PaperBroker(Exchange):
+    """Simulated exchange broker for paper trading.
+
+    Reads historical OHLCV data from a CSV file and fills orders at the
+    last closing price. State (equity, positions, trade log) is persisted to
+    a JSON file after every trade so the bot can resume cleanly on restart.
+    """
+
     def __init__(
         self,
         starting_balance: float = 100.0,
@@ -45,10 +52,12 @@ class PaperBroker(Exchange):
         self.state_store.save(state)
 
     def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> pd.DataFrame:
+        """Return the most recent `limit` rows of preloaded OHLCV data."""
         #raise ConnectionError("Simulated exchange failure")
         return self.ohlcv_data.tail(limit).copy()
 
     def get_balance(self) -> Dict[str, float]:
+        """Return current simulated USDT balance."""
         return {"USDT": self.balance}
 
     def place_order(
@@ -58,8 +67,24 @@ class PaperBroker(Exchange):
         amount: float,
         price: Optional[float] = None,
         order_type: str = "market",
-        reason: str = None,   # NEW: reason for order (STOP, SIGNAL, etc.)
+        reason: str = None,
     ) -> Dict[str, Any]:
+        """Simulate placing a buy or sell order.
+
+        Market orders fill immediately at the last close price with a 0.05% fee.
+        Limit orders are queued in open_orders until cancelled or matched.
+
+        Args:
+            symbol: Trading pair, e.g. "BTC/USDT".
+            side: "buy" or "sell".
+            amount: Asset quantity to trade.
+            price: Limit price; ignored for market orders.
+            order_type: "market" (default) or "limit".
+            reason: Optional tag logged with the trade ("STOP", "SIGNAL", etc.).
+
+        Returns:
+            Order dict with order_id, symbol, side, price, amount, and status.
+        """
         #raise ValueError("Order rejected: insufficient funds")
         order_id = str(self.next_order_id)
         self.next_order_id += 1
@@ -131,6 +156,7 @@ class PaperBroker(Exchange):
         return order
 
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
+        """Cancel an open limit order. Returns status "not_found" if the ID is unknown."""
         order = self.open_orders.pop(order_id, None)
         if not order:
             return {"status": "not_found", "order_id": order_id}
@@ -139,12 +165,14 @@ class PaperBroker(Exchange):
         return order
 
     def get_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Return all open limit orders, optionally filtered by symbol."""
         orders = list(self.open_orders.values())
         if symbol:
             orders = [o for o in orders if o["symbol"] == symbol]
         return orders
 
     def get_positions(self, symbol: Optional[str] = None) -> Dict[str, Any]:
+        """Return open positions, optionally filtered to a single symbol."""
         if symbol:
             return {symbol: self.positions.get(symbol)}
         return self.positions

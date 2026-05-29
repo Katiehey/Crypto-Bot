@@ -1,6 +1,33 @@
+# Secrets and environment
 .env
-backups/
+
+# Compiled Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment
+.venv/
+
+# Logs
 *.log
+logs/
+
+# Runtime state (generated at runtime, not source)
+/state/
+src/state/*.json
+
+# Data files (large, downloaded at runtime)
+data/
+
+# Backups
+backups/
+
+# Databases
+*.db
+*.sqlite3
+
+# OS / editor
 .DS_Store
 node_modules/
 dist/
@@ -10,6 +37,8 @@ dist/
 *.bak
 *.tmp
 coverage/
+
+# Build artefacts
 *.class
 *.jar
 *.war
@@ -21,11 +50,12 @@ coverage/
 *.dylib
 *.obj
 *.out
-*.obj
 *.lib
-*.obj
 *.mod
-*.obj
 *.map
 *.tsbuildinfo
-*.lock              
+*.lock
+
+# SSH keys
+trading-bot.pem
+trading bot.pem
